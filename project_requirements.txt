@@ -1,0 +1,450 @@
+﻿Telegram → Make.com → NestJS 
+Step-by-step integration and troubleshooting guide 
+ 
+Goal: monitor Telegram groups and channels, detect supported message updates, 
+forward structured data to a NestJS backend, and optionally reply in Telegram. 
+ 
+Component 
+	Responsibility 
+	Telegram Bot 
+	Receives Telegram updates and sends bot replies. 
+	Make.com 
+	Hosts the automation scenario, receives updates, filters/routes them, and calls NestJS. 
+	NestJS API 
+	Validates requests, processes messages, stores data, and returns a result. 
+	Database (optional) 
+	Stores message history and business records; MongoDB can be used. 
+	 
+Important: This guide is written for a standard Telegram Bot API bot connected to Make.com. It does not require a separate always-running bot server. Your NestJS API must be publicly reachable over HTTPS when the workflow goes live. 
+ 
+1. Overall architecture 
+The flow will look like this: 
+Telegram group / Telegram channel 
+                  | 
+                  v 
+             Telegram Bot 
+                  | 
+                  v 
+        Make.com — Watch Updates 
+                  | 
+                  v 
+           Filter / Router 
+                  | 
+                  v 
+           HTTP — Make a request 
+                  | 
+                  v 
+           NestJS REST endpoint 
+                  | 
+                  v 
+         Validate + process + save 
+                  | 
+                  v 
+            JSON API response 
+                  | 
+                  v 
+          Make.com — Telegram reply 
+                  | 
+                  v 
+           Group / channel reply 
+Use one Make Watch Updates webhook for a given bot token. Telegram supports one active webhook URL per bot. Do not configure multiple independent webhook consumers for the same bot token. Make's Watch Updates module creates and manages the webhook for its scenario. 
+2. Requirements and preparation 
+Requirement 
+	What to prepare 
+	Telegram account 
+	Account that can access the target groups and channels. 
+	BotFather bot 
+	Bot username and bot token. Keep the token private. 
+	Make.com account 
+	A scenario with Telegram Bot and HTTP modules. 
+	NestJS project 
+	A controller endpoint that accepts JSON. 
+	Public HTTPS endpoint 
+	For production, deploy NestJS behind HTTPS. localhost is not reachable by Make. 
+	Database (optional) 
+	MongoDB or another database if messages need to be stored. 
+	 
+3. Create a Telegram bot 
+1. Open Telegram and search for @BotFather, or visit https://t.me/BotFather. 
+2. Start the chat and send /newbot. 
+3. Enter a display name, for example: Company Message Listener. 
+4. Enter a unique username ending in bot, for example: company_message_listener_bot. 
+5. BotFather returns an API token. Copy it and store it in a password manager or secure environment variable. 
+Do not paste the token into source code, screenshots, public tickets, GitHub, or this document. Anyone with the token can control the bot. If it is exposed, revoke/regenerate it with BotFather and update the Make connection. 
+4. Add the bot to the group and channel 
+4.1 Telegram group 
+6. Open the target group. 
+7. Open the group profile → Administrators → Add Administrator (menu names can vary slightly by Telegram client). 
+8. Select your bot and grant only the permissions it needs. For a read-and-reply integration, administrator membership is the simplest way to ensure it can receive group messages and send replies. 
+9. Check that the bot appears in the member/admin list. 
+Telegram group privacy: by default, privacy-enabled bots do not receive every ordinary group message. Bot administrators receive all group messages (except messages sent by other bots). Alternatively, privacy mode can be disabled through BotFather, then the bot may need to be removed and re-added for the setting to take effect. Prefer administrator access where appropriate. 
+4.2 Telegram channel 
+10. Open the target channel → Manage Channel / Administrators → Add Administrator. 
+11. Add the bot as a channel administrator/member with the permissions needed to read posts and, if required, post replies. 
+12. A bot receives channel posts from channels where it is a member. To publish replies/posts, it needs appropriate posting permission. 
+5. Test the bot token with getMe 
+Before connecting Make, test that Telegram accepts the token. Replace TOKEN with the real token; do not include angle brackets or spaces. 
+https://api.telegram.org/botTOKEN/getMe 
+A successful response resembles: 
+{ 
+  "ok": true, 
+  "result": { 
+        "id": 123456789, 
+        "is_bot": true, 
+        "first_name": "Company Message Listener", 
+        "username": "company_message_listener_bot" 
+  } 
+} 
+You can also test from Windows PowerShell (replace TOKEN): 
+$token = "PASTE_BOT_TOKEN_HERE" 
+Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/getMe" -Method Get 
+If the response is ok:true, the token is valid and Telegram recognizes the bot. This test does not prove that the bot has been added to the right group/channel or that Make is configured. 
+6. Current issue: HTTP 429 / retry_after 32 
+Your current symptom: you created the bot today, called getMe, received HTTP 429 with a retry value of 32, waited about 32 minutes, and still received 429. 
+What 429 means: Telegram is rate-limiting the request. The Bot API may include parameters.retry_after, which is the number of seconds the client should wait before retrying. It is not a guarantee that a broader or continuing server-side restriction will disappear after one wait. 
+Important correction: a newly created Telegram bot does not normally have a mandatory 24-hour or multi-day activation waiting period. A 429 is not evidence that the bot is too new. We cannot conclude from the error alone whether this is a temporary Telegram-side issue, an account/IP-level rate limit, or another platform condition. 
+6.1 Recommended troubleshooting sequence 
+13. Stop repeatedly refreshing getMe. Repeated requests can keep you rate-limited. 
+14. Capture the full JSON error response, especially description and parameters.retry_after. Remove the token before sharing it. 
+15. Wait at least the retry_after value in seconds, then make one test request. If it still returns 429, do not keep retrying every few seconds. 
+16. Confirm the URL format is exactly https://api.telegram.org/bot<TOKEN>/getMe and that no extra spaces, quotes, line breaks, or URL-encoded characters were added to the token. 
+17. Check whether the same token was entered into another bot platform or automation that may be making repeated API calls. Avoid running multiple consumers while diagnosing. 
+18. If the error persists, record the time, response body, and whether the request was from browser or PowerShell. Contact Telegram through the official BotSupport account/help route and include the sanitized error. Do not send the bot token. 
+19. Do not create many replacement bots or repeatedly revoke tokens as a first response. First establish whether the problem is token-specific or a wider Telegram API/account issue. 
+Useful diagnostic: getMe is independent of group permissions and Make scenario configuration. If getMe itself returns 429, adding the bot to a group or changing privacy settings will not fix that API request. 
+6.2 Safe diagnostic checklist 
+Check 
+	Expected result / action 
+	getMe response 
+	ok:true means token accepted. 429 means rate limit; retain exact response. 
+	Token secrecy 
+	Never share token. If exposed, revoke with BotFather and update integrations. 
+	Other bot tests 
+	If you have an older bot, test it once separately. A difference can help isolate the issue, but is not conclusive. 
+	Make connection 
+	Only test after getMe works or after Make provides a specific connection error; do not create competing webhooks. 
+	Escalation 
+	Send sanitized response, timestamp/time zone, and test method to Telegram BotSupport. 
+	 
+7. Create a Make.com scenario 
+20. Sign in at https://www.make.com/. 
+21. Open Scenarios and choose Create a new scenario. 
+22. Click the large plus button and search for Telegram Bot. 
+23. Choose the instant trigger named Watch Updates. 
+24. Click Create a webhook. Give it a clear name, for example Company_Telegram_Updates. 
+25. Create a Telegram Bot connection and paste the BotFather token in the token field. Save. 
+26. Save the module and scenario. 
+Make documentation describes Watch Updates as an instant trigger using a Telegram webhook. Make creates the webhook when you configure the module. The exact labels may change as Make updates its interface. 
+8. Test incoming group and channel updates 
+27. Click Run once in Make. 
+28. Send a new text message in the group where the bot has been added. 
+29. Return to Make and inspect the output bundle from Watch Updates. 
+30. Repeat with a new channel post. 
+31. If group messages are missing, verify the bot is an administrator or that group privacy is configured correctly. 
+32. If channel posts are missing, verify the bot is a member/administrator of that channel. 
+A typical group update may include fields like: 
+{ 
+  "update_id": 123456, 
+  "message": { 
+        "message_id": 100, 
+        "date": 1795500000, 
+        "chat": { 
+          "id": -100123456789, 
+          "title": "Company Group", 
+          "type": "supergroup" 
+        }, 
+        "from": { 
+          "id": 987654321, 
+          "first_name": "John" 
+        }, 
+        "text": "New order ORD1001" 
+  } 
+} 
+A channel update commonly uses channel_post instead of message. An edit uses edited_message or edited_channel_post. Actual fields vary by update type and message content. 
+9. Understand which events are available 
+What happened 
+	Telegram update field 
+	Notes 
+	New group message 
+	message 
+	Bot must have access to the message. 
+	Edited group message 
+	edited_message 
+	Contains the edited message state. 
+	New channel post 
+	channel_post 
+	Bot must be a member of the channel. 
+	Edited channel post 
+	edited_channel_post 
+	Contains the edited post state. 
+	Reaction change 
+	message_reaction / message_reaction_count 
+	Requires suitable allowed_updates and bot/API support; verify Make trigger passes it through. 
+	Deleted message 
+	No general ordinary deletion update 
+	Do not design the integration assuming every deletion will be reported. 
+	 
+Telegram bots do not receive a general update whenever an ordinary group/channel message is deleted. A bot may have other administrative capabilities, but that is not equivalent to a reliable deleted-message event feed. 
+10. Add HTTP module to send data to NestJS 
+33. After Telegram Bot → Watch Updates, click the plus icon. 
+34. Search for HTTP and choose Make a request. 
+35. Set Method to POST. 
+36. Set URL to your public API endpoint, for example https://api.example.com/api/telegram/webhook. 
+37. Set Body type to JSON (or the current Make equivalent for a raw JSON body). 
+38. Add header Content-Type: application/json if Make does not set it automatically. 
+39. Add header x-webhook-secret with a long random secret shared securely with your backend. 
+40. Map the actual values from the Telegram module output into the JSON body. Do not type placeholder labels as literal values. 
+Example payload shape (map each value from Make's Telegram output): 
+{ 
+  "platform": "telegram", 
+  "eventType": "NEW_MESSAGE", 
+  "updateId": 123456, 
+  "chat": { 
+        "id": "-100123456789", 
+        "title": "Company Group", 
+        "type": "supergroup" 
+  }, 
+  "message": { 
+        "id": 100, 
+        "text": "New order ORD1001", 
+        "date": 1795500000 
+  }, 
+  "sender": { 
+        "id": "987654321", 
+        "name": "John" 
+  } 
+} 
+For an edited message, set eventType to EDITED_MESSAGE and map the edited_message object. For a channel post, use NEW_CHANNEL_POST or EDITED_CHANNEL_POST. Keep the original Telegram update in a rawUpdate field if your backend needs fields that are not in the normalized payload. 
+11. Build the NestJS endpoint 
+Create a controller, for example src/telegram/telegram.controller.ts. This simple example validates a shared secret and logs the incoming payload. Add DTO validation and business logic before production. 
+import { 
+  Body, 
+  Controller, 
+  Headers, 
+  Post, 
+  UnauthorizedException, 
+} from '@nestjs/common'; 
+  
+@Controller('api/telegram') 
+export class TelegramController { 
+  @Post('webhook') 
+  async receiveUpdate( 
+        @Body() body: Record<string, any>, 
+        @Headers('x-webhook-secret') secret: string, 
+  ) { 
+        const expectedSecret = process.env.MAKE_WEBHOOK_SECRET; 
+  
+        if (!expectedSecret || secret !== expectedSecret) { 
+          throw new UnauthorizedException('Invalid webhook secret'); 
+        } 
+  
+        console.log('Telegram update received:', body); 
+  
+        // TODO: 
+        // 1. Validate the payload. 
+        // 2. Check whether updateId was already processed. 
+        // 3. Store/update the message in your database. 
+        // 4. Run business rules. 
+  
+        return { 
+          success: true, 
+          message: 'Telegram data received successfully', 
+          updateId: body.updateId ?? null, 
+        }; 
+  } 
+} 
+Add this to your backend .env file (use a long random value): 
+MAKE_WEBHOOK_SECRET=replace_with_a_long_random_secret 
+Ensure your TelegramModule/controller is registered in the NestJS application. If you use a global prefix such as app.setGlobalPrefix('api'), avoid accidentally adding /api twice. In that case, use @Controller('telegram') with the same final route /api/telegram/webhook. 
+12. Make the NestJS API reachable 
+Make.com runs in the cloud. It cannot call http://localhost:3000 on your laptop. 
+* Production: deploy NestJS to your server/cloud and expose a valid HTTPS endpoint through your reverse proxy. 
+* Development: use an approved temporary HTTPS tunnel to forward traffic to your local NestJS port. Do not use a tunnel as the permanent production deployment. 
+* Check that firewall/security group rules allow HTTPS traffic. 
+* Protect the endpoint with the shared secret, validate payloads, rate-limit sensibly, and log failures without logging secrets. 
+13. Handle new and edited messages in Make 
+After Watch Updates, add a Router if you want separate branches. Add filters based on which Telegram update object exists in the output bundle. 
+Route 
+	Filter idea 
+	Backend event 
+	New group message 
+	message exists 
+	NEW_MESSAGE 
+	Edited group message 
+	edited_message exists 
+	EDITED_MESSAGE 
+	New channel post 
+	channel_post exists 
+	NEW_CHANNEL_POST 
+	Edited channel post 
+	edited_channel_post exists 
+	EDITED_CHANNEL_POST 
+	 
+Make's filter field names depend on the bundle structure shown in your own run. Use the field picker rather than guessing the path. 
+14. Extract business data from message text 
+For a predictable message format such as: 
+New Order 
+Customer: John 
+Order ID: ORD1001 
+Amount: 2500 
+Status: Pending 
+You can use Make text tools or parse the text in NestJS. For business-critical data, parsing and validation in NestJS is usually easier to test and maintain. Example simple parsing helper: 
+function parseOrderText(text: string) { 
+  const get = (label: string) => { 
+        const match = text.match( 
+          new RegExp(`^${label}:\\s*(.+)$`, 'im'), 
+        ); 
+        return match?.[1]?.trim() ?? null; 
+  }; 
+  
+  const amountText = get('Amount'); 
+  
+  return { 
+        customer: get('Customer'), 
+        orderId: get('Order ID'), 
+        amount: amountText ? Number(amountText) : null, 
+        status: get('Status'), 
+  }; 
+} 
+Validate required values and numeric ranges. Do not trust message text as authoritative without business checks. 
+15. Send a reply to Telegram 
+41. After the HTTP module, add Telegram Bot → Send a Text Message or Reply. 
+42. Use the original chat.id from the Watch Updates output as Chat ID. 
+43. Map the response returned by NestJS into the reply text. 
+44. For a channel, confirm the bot has permission to post. 
+Example reply: 
+Order received successfully. 
+Order ID: ORD1001 
+Status: Saved 
+If the NestJS API returns an error, use a separate error route/handler so the bot does not falsely tell users that the operation succeeded. 
+16. Avoid duplicate processing 
+Webhook deliveries can be retried. Your backend should be idempotent so the same Telegram update is not processed twice. 
+* Store update_id in a database with a unique index. 
+* Before processing, check whether that update_id already exists. 
+* If already processed, return a successful response without repeating the business action. 
+* For edited messages, identify the message using chat.id + message.message_id and update the stored record. 
+* Keep logs for troubleshooting, but never log the bot token or shared secret. 
+17. File, photo, and attachment handling 
+Telegram messages may contain photos, documents, videos, voice notes, or captions instead of plain text. The update will not always have message.text. 
+* Check whether the message contains photo, document, video, audio, voice, or caption. 
+* Use the Telegram file_id from the update and the relevant Make Telegram Bot download-file module or Telegram Bot API method. 
+* Send the downloaded file to NestJS using multipart/form-data or upload it to approved object storage and send the resulting reference to NestJS. 
+* Apply file-size limits, MIME/type validation, malware scanning where appropriate, and access controls. 
+18. Testing checklist 
+Test 
+	Expected result 
+	Done 
+	getMe 
+	Returns ok:true 
+	☐ 
+	Bot added to group 
+	Bot appears in group members/admins 
+	☐ 
+	Bot added to channel 
+	Bot appears in channel administrators/members 
+	☐ 
+	New group message 
+	Make Watch Updates receives message 
+	☐ 
+	New channel post 
+	Make Watch Updates receives channel_post 
+	☐ 
+	Edited group message 
+	Make receives edited_message 
+	☐ 
+	Edited channel post 
+	Make receives edited_channel_post 
+	☐ 
+	NestJS request 
+	Controller receives JSON and validates secret 
+	☐ 
+	Database 
+	Message is stored once 
+	☐ 
+	Telegram reply 
+	Bot sends correct reply 
+	☐ 
+	Duplicate update 
+	No duplicate business action 
+	☐ 
+	Invalid secret 
+	NestJS returns 401 
+	☐ 
+	 
+19. Common problems and fixes 
+Problem 
+	Likely cause / action 
+	getMe returns 401 
+	Token is wrong, incomplete, revoked, or malformed. Check token and regenerate only if exposed/invalid. 
+	getMe returns 429 
+	Rate limit. Read retry_after, stop repeated requests, wait, test once, and escalate if persistent. 
+	Make cannot connect 
+	Check token, Make connection, and whether Telegram API currently accepts requests. 
+	Group sees only commands 
+	Privacy mode is enabled. Make bot admin or disable privacy through BotFather and re-add if needed. 
+	No channel updates 
+	Bot has not been added to that channel, or the wrong channel was tested. 
+	Make receives update but NestJS does not 
+	Check HTTP URL, HTTPS, server logs, firewall, request body, and Make execution history. 
+	NestJS returns 401 
+	Make's x-webhook-secret does not match MAKE_WEBHOOK_SECRET. 
+	Duplicate records 
+	Implement idempotency using update_id and a unique database index. 
+	Bot cannot post 
+	Check bot admin/posting permissions and correct chat ID. 
+	Edited message not detected 
+	Inspect actual update bundle and route on edited_message or edited_channel_post. 
+	 
+20. Production recommendations 
+* Use a dedicated bot for this integration. 
+* Keep one Make Watch Updates webhook per bot token. 
+* Use a dedicated NestJS endpoint and a secret header. 
+* Validate all incoming fields with DTOs and class-validator or an equivalent validation library. 
+* Use update_id for idempotency. 
+* Store chat ID as a string in your application/database to avoid integer precision issues in some systems. 
+* Log event type, chat ID, message ID, processing status, and correlation/update ID. Never log secrets. 
+* Use Make error handlers and alert when a scenario fails. 
+* Set a sensible retention policy for message text and attachments, and confirm that group members are informed about monitoring where required. 
+* Do not assume deleted messages can be detected. 
+21. Recommended implementation order 
+Phase 
+	Work 
+	Exit condition 
+	1 
+	Resolve getMe 429 
+	getMe returns ok:true. 
+	2 
+	Add bot to test group/channel 
+	Bot has required membership and permissions. 
+	3 
+	Create Make Watch Updates 
+	Make receives test updates. 
+	4 
+	Build NestJS endpoint 
+	Postman/curl test receives JSON. 
+	5 
+	Connect Make HTTP module 
+	Telegram update reaches NestJS. 
+	6 
+	Add routing and event mapping 
+	New/edit/channel event types handled. 
+	7 
+	Add storage and deduplication 
+	Messages stored once and edits update records. 
+	8 
+	Add Telegram reply 
+	Bot sends response after successful processing. 
+	9 
+	Deploy and monitor 
+	HTTPS endpoint and Make scenario run reliably. 
+	 
+22. Official documentation and useful links 
+* Telegram Bot API 
+* Telegram Bots FAQ (message visibility and privacy mode) 
+* Telegram BotFather 
+* Make Telegram Bot app documentation 
+* Make Telegram-triggered scenario guide 
+* Make HTTP + Telegram integration 
+23. Current project status / next action 
+Based on the setup described so far: the bot was created today, but getMe is returning HTTP 429 with retry_after 32 even after waiting approximately 32 minutes. The next action is to stop repeated tests, capture the exact sanitized JSON response and timestamp, then retry once after a quiet period. If it persists, contact Telegram BotSupport. Do not start the Make webhook setup with multiple tools competing for the same bot token. Once getMe succeeds, proceed from Section 7. 
+This document is an implementation guide, not confirmation that the current 429 is a known Telegram outage. The exact cause must be determined from the full response and Telegram-side diagnostics.
