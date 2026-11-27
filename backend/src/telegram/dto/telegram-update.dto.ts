@@ -5,9 +5,10 @@ import {
   IsNumber,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export class ChatDto {
+  @Transform(({ value }) => (value !== undefined && value !== null ? String(value) : value))
   @IsString()
   @IsNotEmpty()
   id: string; // Store as string to avoid 64-bit integer precision loss
@@ -23,6 +24,7 @@ export class ChatDto {
 
 export class SenderDto {
   @IsOptional()
+  @Transform(({ value }) => (value !== undefined && value !== null ? String(value) : value))
   @IsString()
   id?: string;
 
@@ -43,6 +45,17 @@ export class MessageDto {
   @IsOptional()
   @Type(() => Number)
   date?: number;
+}
+
+export class CallbackQueryDto {
+  @IsOptional()
+  @Transform(({ value }) => (value !== undefined && value !== null ? String(value) : value))
+  @IsString()
+  id?: string;
+
+  @IsOptional()
+  @IsString()
+  data?: string;
 }
 
 export class TelegramWebhookDto {
@@ -72,6 +85,11 @@ export class TelegramWebhookDto {
   @ValidateNested()
   @Type(() => SenderDto)
   sender?: SenderDto;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CallbackQueryDto)
+  callbackQuery?: CallbackQueryDto;
 
   @IsOptional()
   @IsString()
